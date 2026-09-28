@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>Items</title>
+<html lang="zh" data-strip-testids="{{STRIP_TESTIDS}}"><head><meta charset="utf-8"><title>Items</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui; }
@@ -19,12 +19,15 @@
     // 加载完成时打一个 data-loaded 哨兵：#items 容器一开始就在 DOM 里，
     // wait_for 它等于没等——行还没到就往下走，count 断言必然随机红。
     // 探索脚本必须等 [data-loaded="true"]，它才真的代表"数据到了"。
+    // 行钩子（item-row）也受 strip 开关管：这些 li 是运行时创建的，
+    // 服务端的正则扫不到，必须在这里读同一个开关。
+    const STRIP = document.documentElement.dataset.stripTestids === 'true';
     setTimeout(() => {
       const ul = document.getElementById('items');
       ['Alpha', 'Beta', 'Gamma'].forEach(name => {
         const li = document.createElement('li');
         li.textContent = name;
-        li.dataset.testid = 'item-row';
+        if (!STRIP) li.dataset.testid = 'item-row';
         ul.appendChild(li);
       });
       ul.dataset.loaded = 'true';

@@ -40,6 +40,34 @@ def test_copy_mode_switches_button_label():
             assert "登 录" in r.read().decode()
 
 
+def test_strip_testids_also_reaches_hooks_the_page_script_would_create():
+    """动态钩子也归开关管：否则 strip 只半生效，验收会为错的原因通过。"""
+    with serve() as srv:
+        _post(f"{srv.base_url}/__demo__/strip-testids", {"strip": True})
+        with urllib.request.urlopen(f"{srv.base_url}/list", timeout=5) as r:
+            stripped = r.read().decode()
+        assert 'data-strip-testids="true"' in stripped
+        script = stripped.split("<script>", 1)[1].split("</script>", 1)[0]
+        assert "if (!STRIP) li.dataset.testid = 'item-row';" in script
+        assert "const STRIP = document.documentElement.dataset.stripTestids === 'true';" in script
+
+        _post(f"{srv.base_url}/__demo__/strip-testids", {"strip": False})
+        with urllib.request.urlopen(f"{srv.base_url}/list", timeout=5) as r:
+            plain = r.read().decode()
+        assert 'data-strip-testids="false"' in plain
+        assert 'data-testid="item-list"' in plain
+
+
+def test_serve_returns_a_usable_handle_not_just_a_context_manager():
+    """接口声明返回 ServerHandle，就直接可用 —— 不要求调用方必须包在 with 里。"""
+    srv = serve()
+    try:
+        assert srv.port > 0
+        assert srv.base_url.startswith("http://127.0.0.1:")
+    finally:
+        srv.stop()
+
+
 def test_strip_testids_removes_the_hook():
     with serve() as srv:
         _post(f"{srv.base_url}/__demo__/strip-testids", {"strip": True})

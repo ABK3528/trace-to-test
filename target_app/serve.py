@@ -11,7 +11,6 @@ import json
 import re
 import threading
 import time
-from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -28,6 +27,10 @@ def _render(name: str) -> str:
     html = (PAGES / name).read_text(encoding="utf-8")
     label = SPEC_COPY if _state["copy_mode"] == "spec" else DRIFTED_COPY
     html = html.replace("{{LOGIN_LABEL}}", label)
+    # strip 开关必须同时告诉页面脚本：列表行是 JS 运行时创建的，
+    # 服务端正则只扫得到服务端渲染出来的那部分 —— 不告诉脚本，
+    # strip 就只是"半生效"，而半生效的开关会让验收为错的原因通过。
+    html = html.replace("{{STRIP_TESTIDS}}", "true" if _state["strip_testids"] else "false")
     if _state["strip_testids"]:
         html = re.sub(r'\sdata-testid="[^"]*"', "", html)
     return html
@@ -90,8 +93,16 @@ class ServerHandle:
         self.stop()
 
 
-@contextmanager
-def serve(port: int = 0, ttl_seconds: float | None = None):
+def serve(port: int = 0, ttl_seconds: float | None = None) -> ServerHandle:
+    """起靶场。返回的 handle **本身就是上下文管理器**，所以两种用法都对：
+
+        with serve() as srv: ...        # 退出时自动停
+        srv = serve(); ...; srv.stop()  # 手动停
+
+    不要写成 @contextmanager 的生成器：那样 serve() 返回的是上下文管理器对象，
+    不是 handle，`srv = serve(); srv.base_url` 会 AttributeError —— 接口声明的是
+    返回 ServerHandle，就真的返回它。（ServerHandle 已经有 __enter__/__exit__。）
+    """
     _state.update({"copy_mode": "spec", "strip_testids": False})
     httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -101,11 +112,7 @@ def serve(port: int = 0, ttl_seconds: float | None = None):
         timer = threading.Timer(ttl_seconds, handle.stop)
         timer.daemon = True
         timer.start()
-    try:
-        yield handle
-    finally:
-        if thread.is_alive():
-            handle.stop()
+    return handle
 
 
 def main() -> None:

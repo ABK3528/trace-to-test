@@ -40,6 +40,8 @@ bash scripts/portability_check.sh
 - `type_text` 暂不编译；探索流程优先使用 `fill_input`。
 - `xy` 仅作为最后兜底锚点，使用时会产生 `WARN`。
 - v1 只覆盖 UI 轨。
+- **录制期点击竞态**：无头 Chrome 下约一成的合成点击不会触发 `dialog.showModal()`（`新建` 这类开弹窗的按钮尤其明显）。推荐做法是对弹窗状态 `wait_for`（例如等 `dialog[open]` 出现）而不是点完就假设它开了；demo 里那段重试只是把这个竞态吸收了，它只覆盖探索期 —— 回放期同样的点击没有任何东西吸收，`attempts=1` 的那些场景会直接红。
+- **一个进程同一时刻只开一个 `Session`**：daemon 名是进程内稳定的（那是为了绕开 `NAME` 只在 import 时读一次的限制），所以两个 `Session` 重叠存活会互相把对方的 daemon 停掉。顺序使用（退出一个再进下一个）是安全的，也正是本框架的用法；要并发请用不同进程。
 
 ## 运行
 

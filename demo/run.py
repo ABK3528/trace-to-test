@@ -65,9 +65,8 @@ def _explore(base_url: str) -> Path:
                 "const r=el.getBoundingClientRect();"
                 "return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()"
             )
-            if not box:
-                break
-            s._bh.click_at_xy(int(box["x"]), int(box["y"]))
+            if box:
+                s._bh.click_at_xy(int(box["x"]), int(box["y"]))
             time.sleep(0.1)
         s.click_text("确定")
         s.stop_recording()
@@ -97,7 +96,8 @@ def _replay(workflow: Workflow, checks: Checks, base_url: str, *, allow_hosts=()
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", choices=["compile", "replay"], default=None)
+    ap.add_argument("--only", choices=["compile", "replay"], default=None,
+                    help="compile = 只跑到编译+补全；replay = 从零重跑全流程（会重新探索与编译，不是跳过编译）")
     args = ap.parse_args(argv)
 
     os.environ.setdefault("DEMO_USERNAME", "demo")

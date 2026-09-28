@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import shutil
 import subprocess
@@ -18,7 +19,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..compile.anchors import SNAP_JS, ElementSnapshot
+from ..compile.anchors import ROLE_NAME_JS, SNAP_JS, ElementSnapshot
 
 DEFAULT_VIEWPORT = (1440, 900)
 
@@ -165,6 +166,32 @@ def reap_leaked_browsers(profile_dir: Path) -> int:
         return len(pids)
     except (subprocess.SubprocessError, OSError):
         return 0
+
+
+def locate_js(anchor) -> str:
+    """把锚点翻译成一条**数组定位表达式**（拼进 LOCATE_HELPERS 的 count/snapshot
+    探针里用）。
+
+    这是 resolve() 拼 JS 的唯一入口 —— 测试守卫也用它，所以守卫不可能再与实现
+    各自为政。锚点里的值一律 `json.dumps` 进 JS 字面量：手改过的 workflow 文件里
+    若出现引号/反斜杠/换行，不会拼出非法 JS 或被注入。
+
+    ⚠️ 只保证**语法正确**（合法 JS 且返回数组）。「语义对不对」（比如 testid 到底
+    查不查得到那个属性、role 的名字链两侧是否一致）不在这里保证 —— 那类 shape 不
+    一致靠 shape 测试 + 真回放兜底。
+    """
+    if anchor.by == "testid":
+        # data-test 也会在编译期产生 testid 锚点（SNAP_JS 两属性都读），
+        # 回放期必须两个属性都搜，否则只带 data-test 的元素永远 resolve 不到。
+        selector = "[data-testid=" + json.dumps(anchor.value) + "], [data-test=" + json.dumps(anchor.value) + "]"
+        return "[...document.querySelectorAll(" + json.dumps(selector) + ")]"
+    if anchor.by == "path":
+        return "[...document.querySelectorAll(" + json.dumps(anchor.value) + ")]"
+    if anchor.by == "text":
+        return "__tttFindByText(" + json.dumps(anchor.value) + ")"
+    if anchor.by == "role":
+        return "__tttFindByRole(" + json.dumps(anchor.role) + ", " + json.dumps(anchor.name) + ")"
+    raise ValueError(f"locate_js: unknown anchor.by {anchor.by!r}")
 
 
 class Session:
@@ -380,18 +407,12 @@ class Session:
         """
         from ..compile.anchors import candidates, normalize, similarity  # 避免循环导入
 
-        locate = {
-            "testid": f"[...document.querySelectorAll('[data-testid=\"{anchor.value}\"]')]",
-            "path": f"[...document.querySelectorAll({anchor.value!r})]",
-            "text": f"__tttFindByText({anchor.value!r})",
-            "role": f"__tttFindByRole({anchor.role!r}, {anchor.name!r})",
-            "xy": None,
-        }[anchor.by]
-
         if anchor.by == "xy":
             x, y = (int(v) for v in anchor.value.split(","))
             snap = self.snapshot_at(x, y)
             return {"count": 1 if snap else 0, "snap": snap, "drift": ""}
+
+        locate = locate_js(anchor)
 
         count = int(self.js(LOCATE_HELPERS + f"(()=>{{ const r={locate}; "
                          "return Array.isArray(r) ? r.length : (r ? 1 : 0); })()") or 0)
@@ -418,34 +439,24 @@ class Session:
 
 
 # 注入页面的定位辅助函数：文本匹配（归一化后精确）与 role+name 匹配。
+# 角色/名字/截断来自 ROLE_NAME_JS —— 与编译期 SNAP_JS 是同一份，避免两侧各写一份
+# "今天碰巧一样"的链（那是 role 锚点编译后永不命中的根因）。
 LOCATE_HELPERS = r"""
 (() => {
   if (window.__tttHelpersInstalled) return;
+""" + ROLE_NAME_JS + r"""
   const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  const IMPLICIT_ROLE = {
-    a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
-    nav: 'navigation', main: 'main', header: 'banner', footer: 'contentinfo',
-    h1: 'heading', h2: 'heading', h3: 'heading', ul: 'list', li: 'listitem',
-    table: 'table', dialog: 'dialog', form: 'form',
-  };
-  const INPUT_ROLE = { submit: 'button', button: 'button', checkbox: 'checkbox',
-                       radio: 'radio', search: 'searchbox' };
-  const __tttRoleOf = el => el.getAttribute('role')
-    || IMPLICIT_ROLE[el.tagName.toLowerCase()]
-    || (el.tagName.toLowerCase() === 'input'
-        ? INPUT_ROLE[(el.getAttribute('type') || 'text').toLowerCase()] || ''
-        : '');
   window.__tttVisible = el => {
     const r = el.getBoundingClientRect();
     const st = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
   };
   window.__tttFindByText = t => [...document.querySelectorAll('*')]
-      .filter(el => window.__tttVisible(el) && norm(el.textContent) === norm(t)
-                    && ![...el.children].some(c => norm(c.textContent) === norm(t)))[0] || null;
+      .filter(el => window.__tttVisible(el) && norm(clip80(el.textContent)) === norm(t)
+                    && ![...el.children].some(c => norm(clip80(c.textContent)) === norm(t)))[0] || null;
   window.__tttFindByRole = (role, name) => [...document.querySelectorAll('*')]
       .filter(el => window.__tttVisible(el) && (__tttRoleOf(el) === role)
-                    && norm(el.getAttribute('aria-label') || el.textContent) === norm(name));
+                    && norm(clip80(__tttNameOf(el))) === norm(name));
   window.__tttAllLabels = () => [...document.querySelectorAll('button,a,[role],label,input')]
       .filter(window.__tttVisible)
       .map(el => (el.getAttribute('aria-label') || el.textContent || el.getAttribute('placeholder') || '').trim())

@@ -134,7 +134,40 @@ def test_execution_stops_at_the_first_failing_step():
     assert locator.resolved == ["gone"]
 
 
+
+def test_a_click_with_both_an_anchor_and_coordinates_dispatches_through_the_anchor():
+    wf = _wf(Step(n=1, action="click", anchor=A_TESTID, xy=(10, 20)))
+    locator = FakeLocator()
+    result = run(wf, locator)
+    assert result.status == PASS
+    assert locator.calls == ["click@testid:create-dialog"]
+    assert "click:10,20" not in locator.calls
+
+
+def test_a_coordinate_only_click_still_uses_coordinates():
+    wf = _wf(Step(n=1, action="click", xy=(10, 20)))
+    locator = FakeLocator()
+    result = run(wf, locator)
+    assert result.status == PASS
+    assert locator.calls == ["click:10,20"]
+
+
+def test_a_click_with_neither_anchor_nor_coordinates_is_an_environment_failure():
+    wf = _wf(Step(n=1, action="click"))
+    locator = FakeLocator()
+    result = run(wf, locator)
+    assert result.status == FAIL_ENV
+    assert result.reason == "environment"
+    assert locator.calls == []
+
+
 def test_xy_fallback_targets_are_reported_as_warnings_not_failures():
+    wf = _wf(Step(n=1, action="click", anchor=Anchor(by="xy", value="10,20", fallback=True)))
+    locator = FakeLocator(resolve_script={"10,20": {"count": 1, "snap": None, "drift": ""}})
+    result = run(wf, locator)
+    assert result.status == PASS
+    assert result.steps[0].status == "ok"
+
     wf = _wf(Step(n=1, action="click", anchor=Anchor(by="xy", value="10,20", fallback=True)))
     locator = FakeLocator(resolve_script={"10,20": {"count": 1, "snap": None, "drift": ""}})
     result = run(wf, locator)

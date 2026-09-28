@@ -9,7 +9,7 @@ probe  模式：动作执行**之前**抓一份元素快照，供编译器反解
 from __future__ import annotations
 
 import os
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from ..compile.anchors import ElementSnapshot
 from ..compile.schema import Checks, Step, Workflow
@@ -29,17 +29,20 @@ class Locator(Protocol):
     def snapshot_focused(self) -> ElementSnapshot | None: ...
 
 
-def _perform(step: Step, locator: Locator) -> None:
+def _perform(step: Step, locator: Locator, *, replay_value: str | None = None) -> None:
     """把一步变成对 locator 的调用。两种模式共用。"""
     if step.action == "goto":
         locator.goto(step.path)
     elif step.action == "click":
-        if step.xy:
+        if step.anchor is not None:
+            locator.click_at_anchor(step.anchor)
+        elif step.xy is not None:
             locator.click_xy(*step.xy)
         else:
-            locator.click_at_anchor(step.anchor)
+            raise ValueError(f"step {step.n}: click needs either an anchor or coordinates")
     elif step.action == "fill":
-        locator.fill(step.selector, _value_of(step))
+        value = replay_value if replay_value is not None else _value_of(step)
+        locator.fill(step.selector, value)
     elif step.action == "press":
         locator.press(step.key)
     elif step.action == "wait_for":
@@ -147,11 +150,17 @@ def _evaluate(check, locator: Locator) -> CheckOutcome:
     raise ValueError(f"unknown check kind {check.kind!r}")
 
 
-def probe(workflow: Workflow, locator: Locator) -> tuple[tuple[Step, ElementSnapshot | None], ...]:
+def probe(
+    workflow: Workflow,
+    locator: Locator,
+    *,
+    replay_values: Mapping[int, str] | None = None,
+) -> tuple[tuple[Step, ElementSnapshot | None], ...]:
     """编译期模式：走一遍步骤，在每个需要锚点的动作**之前**抓元素快照。
 
     返回 ((step, snapshot|None), ...)，顺序与 workflow.steps 一致。
     """
+    replay_values = replay_values or {}
     outcomes: list[tuple[Step, ElementSnapshot | None]] = []
     for step in workflow.steps:
         snapshot = None
@@ -160,5 +169,5 @@ def probe(workflow: Workflow, locator: Locator) -> tuple[tuple[Step, ElementSnap
         elif step.action == "press":
             snapshot = locator.snapshot_focused()
         outcomes.append((step, snapshot))
-        _perform(step, locator)
+        _perform(step, locator, replay_value=replay_values.get(step.n))
     return tuple(outcomes)

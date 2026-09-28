@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+  <form data-testid="login-form">
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password">
+    <button type="button" id="submit-login" onclick="location.href='/list'">{{LOGIN_LABEL}}</button>
+  </form>
+  <p id="error" hidden>Invalid credentials</p>
+</body></html>

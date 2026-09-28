@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>Items</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui; }
+  #items li { padding: 4px 0; }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+</style></head>
+<body>
+  <h1>Items</h1>
+  <button id="open-create" onclick="document.getElementById('dlg').showModal()">新建</button>
+  <dialog id="dlg" data-testid="create-dialog">
+    <form method="dialog"><p>Create a new item?</p>
+      <button id="confirm-create" data-testid="confirm-create">确定</button></form>
+  </dialog>
+  <ul id="items" data-testid="item-list"></ul>
+  <script>
+    // 异步加载：给回放引擎的 settle 留出真实的"数据还没到"窗口。
+    // 加载完成时打一个 data-loaded 哨兵：#items 容器一开始就在 DOM 里，
+    // wait_for 它等于没等——行还没到就往下走，count 断言必然随机红。
+    // 探索脚本必须等 [data-loaded="true"]，它才真的代表"数据到了"。
+    setTimeout(() => {
+      const ul = document.getElementById('items');
+      ['Alpha', 'Beta', 'Gamma'].forEach(name => {
+        const li = document.createElement('li');
+        li.textContent = name;
+        li.dataset.testid = 'item-row';
+        ul.appendChild(li);
+      });
+      ul.dataset.loaded = 'true';
+    }, 600);
+  </script>
+</body></html>

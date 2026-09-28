@@ -22,6 +22,8 @@ def test_demo_oracle_reads_expectations_from_the_spec_document(tmp_path):
     oracle = demo_oracle_from_spec(spec)
     assert oracle.source_tag.startswith("spec:")
     assert "spec.md" in oracle.source_tag
+    body = oracle.expectation("items#2-列表页")
+    assert "Alpha" in body and "Gamma" in body
 
 
 def test_demo_oracle_refuses_a_key_it_cannot_source(tmp_path):

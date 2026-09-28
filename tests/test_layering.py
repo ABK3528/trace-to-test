@@ -4,6 +4,8 @@
 光写在文档里的边界，第一次赶工时就会被越过去。
 """
 import ast
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,19 +15,39 @@ MECHANISM = ("core", "checks")
 FORBIDDEN = ("adapters", "target_app", "demo")
 
 
+ESCAPES_TOP_LEVEL = "<escapes-top-level>"
+FORBIDDEN_IMPORTS = frozenset({"adapters", "target_app", "demo", ESCAPES_TOP_LEVEL})
+
+
+def _package_of(path: Path) -> str:
+    """core/compile/x.py → 'core.compile'；core/x.py → 'core'。"""
+    parts = list(path.relative_to(ROOT).with_suffix("").parts)
+    parts.pop()                                   # 去掉模块名（或 __init__）
+    return ".".join(parts)
+
+
 def _imported_modules(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    package = _package_of(path)
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom):
-            if node.level and node.module is None:
+            if node.level == 0:
+                if node.module:
+                    found.add(node.module.split(".")[0])
                 continue
-            if node.level:                       # 相对导入，跳出本包才算越界
+            # Resolve relative names against their package context. An ImportError
+            # means the import climbs above the top-level package and is forbidden.
+            try:
+                resolved = importlib.util.resolve_name(
+                    "." * node.level + (node.module or ""), package
+                )
+            except ImportError:
+                found.add(ESCAPES_TOP_LEVEL)
                 continue
-            if node.module:
-                found.add(node.module.split(".")[0])
+            found.add(resolved.split(".")[0])
     return found
 
 
@@ -42,12 +64,49 @@ def test_the_mechanism_layer_exists_so_this_test_is_not_vacuous():
 
 @pytest.mark.parametrize("path", _mechanism_files(), ids=lambda p: str(p.relative_to(ROOT)))
 def test_mechanism_never_imports_the_project_layer(path: Path):
-    broken = _imported_modules(path) & set(FORBIDDEN)
+    broken = _imported_modules(path) & FORBIDDEN_IMPORTS
     assert not broken, f"{path.relative_to(ROOT)} imports {sorted(broken)} — 机制层不许依赖项目层"
 
 
-def test_the_mechanism_layer_has_no_llm_client_dependency():
-    """回放与编译必须零 LLM。"""
-    banned = {"openai", "anthropic", "litellm", "langchain", "ollama", "requests"}
+def test_a_relative_import_that_escapes_the_top_level_package_is_caught():
+    """Regression for relative imports escaping core; probe real resolver behavior."""
+    probe = ROOT / "core" / "_probe_escape.py"
+    probe.write_text("from ..adapters import target\n", encoding="utf-8")
+    try:
+        assert ESCAPES_TOP_LEVEL in _imported_modules(probe)
+    finally:
+        probe.unlink()
+
+
+ALLOWED_THIRD_PARTY = frozenset({"browser_harness"})
+
+
+def test_the_mechanism_layer_imports_nothing_unexpected():
+    """Allow only stdlib, project packages, and explicitly permitted third-party."""
+    allowed = set(sys.stdlib_module_names) | {"core", "checks"}
     for path in _mechanism_files():
-        assert not (_imported_modules(path) & banned), f"{path.relative_to(ROOT)} 引入了 LLM/网络客户端"
+        extra = _imported_modules(path) - allowed - ALLOWED_THIRD_PARTY
+        assert not extra, f"{path.relative_to(ROOT)} 引入了未许可的依赖 {sorted(extra)}"
+
+
+def test_only_the_browser_layer_may_touch_the_browser_driver():
+    """browser_harness is confined to core/primitives; replay and compile stay browser-independent."""
+    for path in _mechanism_files():
+        if "browser_harness" not in _imported_modules(path):
+            continue
+        assert path.relative_to(ROOT).parts[:2] == ("core", "primitives"), (
+            f"{path.relative_to(ROOT)} 引入了 browser_harness，但它不在 core/primitives/"
+        )
+
+
+def test_the_replay_and_compile_layers_use_nothing_but_stdlib_and_core():
+    """Replay and compile are the zero-LLM boundary; no third-party deps are allowed."""
+    allowed = set(sys.stdlib_module_names) | {"core"}
+    checked = 0
+    for path in _mechanism_files():
+        if path.relative_to(ROOT).parts[:2] not in (("core", "replay"), ("core", "compile")):
+            continue
+        checked += 1
+        residual = _imported_modules(path) - allowed
+        assert not residual, f"{path.relative_to(ROOT)} 在零 LLM 层引入了非标准库依赖 {sorted(residual)}"
+    assert checked > 0, "没有扫到 core/replay 或 core/compile —— 这条守卫会空过"

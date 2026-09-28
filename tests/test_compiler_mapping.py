@@ -58,11 +58,15 @@ def test_click_steps_get_anchors_resolved_from_the_probe():
     assert clicks[0].anchor.value == "open-create"
 
 
-def test_compiled_steps_keep_the_original_coordinates_for_probe_only():
+def test_compiled_click_steps_drop_the_recorded_coordinates():
+    """Compiled clicks retain semantic anchors but discard probe-only coordinates."""
     loc = ScriptedLocator({(120, 168): BUTTON, (88, 72): BUTTON, (210, 260): DIALOG_BTN})
     result = compile_recording(load_recording(FIXTURE), target="demo", locator=loc)
     clicks = [s for s in result.workflow.steps if s.action == "click"]
-    assert all(s.xy for s in clicks)
+    assert clicks
+    assert all(step.anchor is not None for step in clicks)
+    assert all(step.xy is None for step in clicks)
+
 
 
 def test_the_probe_replays_the_whole_recording_in_order():

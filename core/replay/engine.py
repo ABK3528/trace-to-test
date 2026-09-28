@@ -34,10 +34,12 @@ def _perform(step: Step, locator: Locator, *, replay_value: str | None = None) -
     if step.action == "goto":
         locator.goto(step.path)
     elif step.action == "click":
-        if step.xy:
+        if step.anchor is not None:
+            locator.click_at_anchor(step.anchor)
+        elif step.xy is not None:
             locator.click_xy(*step.xy)
         else:
-            locator.click_at_anchor(step.anchor)
+            raise ValueError(f"step {step.n}: click needs either an anchor or coordinates")
     elif step.action == "fill":
         value = replay_value if replay_value is not None else _value_of(step)
         locator.fill(step.selector, value)

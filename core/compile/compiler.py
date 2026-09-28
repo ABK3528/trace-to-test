@@ -197,7 +197,7 @@ def compile_recording(
                     reason="no_semantic_hook",
                 ))
                 continue
-            step = replace(step, anchor=semantic[0])
+            step = replace(step, anchor=semantic[0], xy=None)
         steps.append(step)
         if snap is not None:
             todo.append(_suggest(step, snap))

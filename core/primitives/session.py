@@ -141,12 +141,12 @@ def _load_harness():
     """
     try:
         from browser_harness import helpers, recorder  # noqa: PLC0415
-        from browser_harness.admin import ensure_daemon  # noqa: PLC0415
+        from browser_harness.admin import ensure_daemon, restart_daemon  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - environment problem
         raise BrowserHarnessMissing(
             "browser-harness is not installed. Run: uv sync --extra browser"
         ) from exc
-    return helpers, recorder, ensure_daemon
+    return helpers, recorder, ensure_daemon, restart_daemon
 
 
 def reap_leaked_browsers(profile_dir: Path) -> int:
@@ -192,7 +192,9 @@ class Session:
                 / f"ttt-profile-{os.getpid()}-{next(_PROFILE_SEQ)}"
             )
         self.profile_dir = Path(profile_dir)
+        self._daemon_name = f"ttt-{os.getpid()}"
         self._bh = None
+        self._restart_daemon = None
 
     def __enter__(self) -> "Session":
         self.profile_dir.mkdir(parents=True, exist_ok=True)
@@ -213,11 +215,13 @@ class Session:
 
         # 🔴 顺序不能变：把 BU_NAME/BU_CDP_URL 写进 os.environ **之后**才 import
         #    browser_harness。NAME 是 import 时读一次的，写晚了就挂到用户浏览器上。
-        self._daemon_name = f"ttt-{os.getpid()}-{self._port}"
+        self._daemon_name = f"ttt-{os.getpid()}"
         os.environ.update(harness_env(self._daemon_name, self._port))
 
         try:
-            self._bh, self._recorder, ensure_daemon = _load_harness()
+            self._bh, self._recorder, ensure_daemon, restart_daemon = _load_harness()
+            self._restart_daemon = restart_daemon
+            restart_daemon(name=self._daemon_name)
             ensure_daemon(name=self._daemon_name)
             self._apply_viewport()
         except BaseException:
@@ -245,6 +249,10 @@ class Session:
         用户主 Chrome / 用户正在用的窗口没有这个参数，一个都不许动。
         """
         chrome = getattr(self, "_chrome", None)
+        restart_daemon = getattr(self, "_restart_daemon", None)
+        if restart_daemon is not None and self._daemon_name:
+            restart_daemon(name=self._daemon_name)
+            self._restart_daemon = None
         if chrome is not None and chrome.poll() is None:
             chrome.terminate()
             try:
@@ -373,8 +381,8 @@ class Session:
         from ..compile.anchors import candidates, normalize, similarity  # 避免循环导入
 
         locate = {
-            "testid": f"document.querySelector({anchor.value!r} and '[data-testid=\"'+{anchor.value!r}+'\"]')",
-            "path": f"document.querySelector({anchor.value!r})",
+            "testid": f"[...document.querySelectorAll('[data-testid=\"{anchor.value}\"]')]",
+            "path": f"[...document.querySelectorAll({anchor.value!r})]",
             "text": f"__tttFindByText({anchor.value!r})",
             "role": f"__tttFindByRole({anchor.role!r}, {anchor.name!r})",
             "xy": None,
@@ -386,9 +394,13 @@ class Session:
             return {"count": 1 if snap else 0, "snap": snap, "drift": ""}
 
         count = int(self.js(LOCATE_HELPERS + f"(()=>{{ const r={locate}; "
-                         "return Array.isArray(r) ? r.length : (r ? 1 : 0); }})()") or 0)
+                         "return Array.isArray(r) ? r.length : (r ? 1 : 0); })()") or 0)
         if count == 1:
-            return {"count": 1, "snap": self._snapshot_js(LOCATE_HELPERS + f"(()=>{{const r={locate}; return Array.isArray(r)?r[0]:r;}})()"), "drift": ""}
+            # Helpers 已在上面那条 count 调用里装好；这里不再拼 LOCATE_HELPERS。
+            # 否则 `_snapshot_js` 会把 helpers 的 IIFE 当成 locate 表达式的值
+            # （helpers 返回 undefined ⇒ 快照永远为空）。
+            return {"count": 1, "snap": self._snapshot_js(
+                f"(()=>{{const r={locate}; return Array.isArray(r)?r[0]:r;}})()"), "drift": ""}
         if count > 1:
             return {"count": count, "snap": None, "drift": ""}
 
@@ -410,6 +422,19 @@ LOCATE_HELPERS = r"""
 (() => {
   if (window.__tttHelpersInstalled) return;
   const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const IMPLICIT_ROLE = {
+    a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
+    nav: 'navigation', main: 'main', header: 'banner', footer: 'contentinfo',
+    h1: 'heading', h2: 'heading', h3: 'heading', ul: 'list', li: 'listitem',
+    table: 'table', dialog: 'dialog', form: 'form',
+  };
+  const INPUT_ROLE = { submit: 'button', button: 'button', checkbox: 'checkbox',
+                       radio: 'radio', search: 'searchbox' };
+  const __tttRoleOf = el => el.getAttribute('role')
+    || IMPLICIT_ROLE[el.tagName.toLowerCase()]
+    || (el.tagName.toLowerCase() === 'input'
+        ? INPUT_ROLE[(el.getAttribute('type') || 'text').toLowerCase()] || ''
+        : '');
   window.__tttVisible = el => {
     const r = el.getBoundingClientRect();
     const st = getComputedStyle(el);
@@ -419,7 +444,7 @@ LOCATE_HELPERS = r"""
       .filter(el => window.__tttVisible(el) && norm(el.textContent) === norm(t)
                     && ![...el.children].some(c => norm(c.textContent) === norm(t)))[0] || null;
   window.__tttFindByRole = (role, name) => [...document.querySelectorAll('*')]
-      .filter(el => window.__tttVisible(el) && (el.getAttribute('role') === role)
+      .filter(el => window.__tttVisible(el) && (__tttRoleOf(el) === role)
                     && norm(el.getAttribute('aria-label') || el.textContent) === norm(name));
   window.__tttAllLabels = () => [...document.querySelectorAll('button,a,[role],label,input')]
       .filter(window.__tttVisible)

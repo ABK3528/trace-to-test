@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 import pytest
 import sys
 import types
@@ -84,6 +86,13 @@ def test_default_profile_is_unique_per_session(tmp_path, monkeypatch):
     assert first.profile_dir.name.startswith(f"ttt-profile-{os.getpid()}-")
 
 
+def test_sessions_share_a_stable_daemon_name_but_not_a_chrome_profile():
+    first = Session("http://127.0.0.1:8712")
+    second = Session("http://127.0.0.1:8712")
+    assert first._daemon_name == second._daemon_name == f"ttt-{os.getpid()}"
+    assert first.profile_dir != second.profile_dir
+
+
 # —— 隔离：这是我们自起 Chrome 的全部依据，不能只写在注释里 ——
 
 
@@ -156,6 +165,45 @@ def test_reap_matches_the_key_name_not_the_bare_path(tmp_path):
     提到这个路径"的无关进程（包括正在跑的这条 shell），是事故不是清理。"""
     src = Path(session_mod.__file__).read_text(encoding="utf-8")
     assert 'f"user-data-dir={profile_dir}"' in src
+
+
+# —— resolve() 拼 JS：四种定位表达式都必须是对浏览器合法的 JS ——
+# 这些测试不碰浏览器，只验证 resolve() 生成的字符串能被 node 解析 ——
+# 历史缺陷：resolve() 生成的 count IIFE 少一个右花括号（`}})()` 而非 `})()`），
+# testid 定位串把 CSS 选择器当 JS 布尔拼（`'x' and '...'`），path/text/role 三
+# 种定位都用 `querySelector` 而它不返回数组 —— 全都只在"真的对着浏览器 resolve"
+# 时才暴露，单测里的 FakeLocator 永远替身掉 resolve 本身。
+
+
+def _resolve_count_js(anchor: Anchor) -> str:
+    """复刻 resolve() 里 count 分支拼出的完整 JS，供 node 语法检查。"""
+    import core.primitives.session as sm
+
+    locate = {
+        "testid": f"[...document.querySelectorAll('[data-testid=\"{anchor.value}\"]')]",
+        "path": f"[...document.querySelectorAll({anchor.value!r})]",
+        "text": f"__tttFindByText({anchor.value!r})",
+        "role": f"__tttFindByRole({anchor.role!r}, {anchor.name!r})",
+        "xy": None,
+    }[anchor.by]
+    return (sm.LOCATE_HELPERS
+            + f"(()=>{{ const r={locate}; "
+              "return Array.isArray(r) ? r.length : (r ? 1 : 0); })()")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_resolve_locators_are_valid_js(tmp_path):
+    anchors = [
+        Anchor(by="role", role="button", name="登 录", copy_sensitive=True),
+        Anchor(by="text", value="新建", copy_sensitive=True),
+        Anchor(by="path", value="body > form > button"),
+        Anchor(by="testid", value="item-row"),
+    ]
+    for anchor in anchors:
+        js_file = tmp_path / "resolve.js"
+        js_file.write_text(_resolve_count_js(anchor), encoding="utf-8")
+        result = subprocess.run(["node", "--check", str(js_file)], capture_output=True, text=True)
+        assert result.returncode == 0, f"{anchor.by} locate is not valid JS: {result.stderr}"
 
 
 # —— 录制形状：_act 必须按位置传参，否则录制里的坐标落成 None ——
@@ -285,16 +333,21 @@ def test_enter_sets_isolated_harness_environment_before_admin_import(monkeypatch
         assert os.environ["BU_CDP_URL"] == "http://127.0.0.1:9555"
         calls.append(("ensure_daemon", name))
 
+    def restart_daemon(name):
+        calls.append(("restart_daemon", name))
+
     monkeypatch.setattr(session_mod, "_load_harness", lambda: (
         types.SimpleNamespace(cdp=lambda *args, **kwargs: None),
         object(),
         ensure_daemon,
+        restart_daemon,
     ))
 
-    monkeypatch.setitem(sys.modules, "browser_harness.admin", types.SimpleNamespace(ensure_daemon=ensure_daemon))
+    monkeypatch.setitem(sys.modules, "browser_harness.admin", types.SimpleNamespace(
+        ensure_daemon=ensure_daemon, restart_daemon=restart_daemon))
     s = Session("http://127.0.0.1:8712", profile_dir=tmp_path)
     try:
         assert s.__enter__() is s
-        assert calls == [("ensure_daemon", s._daemon_name)]
+        assert calls == [("restart_daemon", s._daemon_name), ("ensure_daemon", s._daemon_name)]
     finally:
         s._shutdown()

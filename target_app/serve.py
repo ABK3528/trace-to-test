@@ -20,7 +20,7 @@ BUILD = "demo-build-1"
 SPEC_COPY = "登 录"
 DRIFTED_COPY = "立即登录"
 
-_state = {"copy_mode": "spec", "strip_testids": False}
+_state = {"copy_mode": "spec", "strip_testids": False, "shift_dy": 0}
 
 
 def _render(name: str) -> str:
@@ -31,6 +31,7 @@ def _render(name: str) -> str:
     # 服务端正则只扫得到服务端渲染出来的那部分 —— 不告诉脚本，
     # strip 就只是"半生效"，而半生效的开关会让验收为错的原因通过。
     html = html.replace("{{STRIP_TESTIDS}}", "true" if _state["strip_testids"] else "false")
+    html = html.replace("{{SHIFT_STYLE}}", f"body {{ transform: translateY({_state['shift_dy']}px); }}")
     if _state["strip_testids"]:
         html = re.sub(r'\sdata-testid="[^"]*"', "", html)
     return html
@@ -72,6 +73,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/__demo__/strip-testids":
             _state["strip_testids"] = bool(payload.get("strip"))
             return self._json({"ok": True, "state": _state})
+        if path == "/__demo__/shift-layout":
+            _state["shift_dy"] = int(payload.get("dy") or 0)
+            return self._json({"ok": True, "state": _state})
         return self._json({"error": "unknown"}, 404)
 
 
@@ -103,7 +107,7 @@ def serve(port: int = 0, ttl_seconds: float | None = None) -> ServerHandle:
     不是 handle，`srv = serve(); srv.base_url` 会 AttributeError —— 接口声明的是
     返回 ServerHandle，就真的返回它。（ServerHandle 已经有 __enter__/__exit__。）
     """
-    _state.update({"copy_mode": "spec", "strip_testids": False})
+    _state.update({"copy_mode": "spec", "strip_testids": False, "shift_dy": 0})
     httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

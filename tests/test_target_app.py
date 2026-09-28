@@ -73,3 +73,15 @@ def test_strip_testids_removes_the_hook():
         _post(f"{srv.base_url}/__demo__/strip-testids", {"strip": True})
         with urllib.request.urlopen(f"{srv.base_url}/login", timeout=5) as r:
             assert 'data-testid="login-form"' not in r.read().decode()
+
+
+def test_shift_layout_pushes_the_content_down():
+    with serve() as srv:
+        _post(f"{srv.base_url}/__demo__/shift-layout", {"dy": 120})
+        for page in ("/login", "/list"):
+            with urllib.request.urlopen(f"{srv.base_url}{page}", timeout=5) as r:
+                assert "translateY(120px)" in r.read().decode()
+
+        _post(f"{srv.base_url}/__demo__/shift-layout", {"dy": 0})
+        with urllib.request.urlopen(f"{srv.base_url}/login", timeout=5) as r:
+            assert "translateY(120px)" not in r.read().decode()

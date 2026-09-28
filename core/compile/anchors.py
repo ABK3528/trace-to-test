@@ -20,6 +20,38 @@ _MAX_TEXT = 80
 # 公共段短于这个长度就不算"文案改写"——否则短标签被包含即得满分
 _MIN_PARTIAL_CHARS = 2
 
+# 「角色 + 可访问名」只写一份：SNAP_JS（编译期快照）与回放期的 LOCATE_HELPERS 各自
+# interpolate 这一段。两侧若各写一份"今天碰巧一样"的角色/名字链，就会重演 role 锚点
+# 编译后永不命中的缺陷（一侧按 <label>/aria-labelledby/placeholder/title/alt 取名，
+# 另一侧只认 aria-label/textContent）。
+ROLE_NAME_JS = r"""
+  const clip80 = s => (s || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const IMPLICIT_ROLE = {
+    a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
+    nav: 'navigation', main: 'main', header: 'banner', footer: 'contentinfo',
+    h1: 'heading', h2: 'heading', h3: 'heading', ul: 'list', li: 'listitem',
+    table: 'table', dialog: 'dialog', form: 'form',
+  };
+  const INPUT_ROLE = { submit: 'button', button: 'button', checkbox: 'checkbox',
+                       radio: 'radio', search: 'searchbox' };
+  const __tttRoleOf = el => el.getAttribute('role')
+    || IMPLICIT_ROLE[el.tagName.toLowerCase()]
+    || (el.tagName.toLowerCase() === 'input'
+        ? INPUT_ROLE[(el.getAttribute('type') || 'text').toLowerCase()] || ''
+        : '');
+  const __tttNameOf = el => {
+    const aria = el.getAttribute('aria-label') || '';
+    const labelled = el.getAttribute('aria-labelledby');
+    const labelText = labelled
+      ? (document.getElementById(labelled)?.textContent || '')
+      : (el.labels && el.labels[0] ? el.labels[0].textContent : '');
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    return (aria || labelText || t || el.getAttribute('placeholder')
+            || el.getAttribute('title') || el.getAttribute('alt') || '').trim();
+  };
+"""
+
+
 # 在页面里取「这个元素是什么」。返回结构必须与 ElementSnapshot 的字段对齐。
 SNAP_JS = r"""
 (() => {
@@ -41,28 +73,11 @@ SNAP_JS = r"""
     }
     return parts.join(' > ');
   })();
-  const aria = el.getAttribute('aria-label') || '';
-  const labelled = el.getAttribute('aria-labelledby');
-  const labelText = labelled
-    ? (document.getElementById(labelled)?.textContent || '')
-    : (el.labels && el.labels[0] ? el.labels[0].textContent : '');
-  const name = (aria || labelText || t || el.getAttribute('placeholder')
-                || el.getAttribute('title') || el.getAttribute('alt') || '').trim();
-  // 隐式角色：真实页面里绝大多数元素没有显式 role 属性，
-  // 只读 getAttribute('role') 会让 role 锚点几乎永远缺席。
-  const IMPLICIT = {
-    a: 'link', button: 'button', select: 'combobox', textarea: 'textbox',
-    nav: 'navigation', main: 'main', header: 'banner', footer: 'contentinfo',
-    h1: 'heading', h2: 'heading', h3: 'heading', ul: 'list', li: 'listitem',
-    table: 'table', dialog: 'dialog', form: 'form',
-  };
-  const input = el.tagName.toLowerCase() === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
-  const INPUT_ROLE = { submit: 'button', button: 'button', checkbox: 'checkbox', radio: 'radio', search: 'searchbox' };
-  const role = el.getAttribute('role') || IMPLICIT[el.tagName.toLowerCase()] || INPUT_ROLE[input] || '';
+""" + ROLE_NAME_JS + r"""
   return {
     tag: el.tagName.toLowerCase(),
-    role: role,
-    name: name.slice(0, 200),
+    role: __tttRoleOf(el),
+    name: __tttNameOf(el).slice(0, 200),
     text: t.slice(0, 200),
     testid: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
     attrs: { id: el.id || '', name: el.getAttribute('name') || '', type: el.getAttribute('type') || '' },

@@ -1,0 +1,10 @@
+{
+  "value_refs": {
+    "#username": "env:DEMO_USERNAME",
+    "#password": "env:DEMO_PASSWORD"
+  },
+  "checks": [
+    {"id": "c1", "after_step": 7, "kind": "count", "anchor": {"by": "testid", "value": "item-row"}, "expect": "3", "source": "spec:demo/spec.md#2-列表页"},
+    {"id": "c2", "after_step": 7, "kind": "text_present", "anchor": {"by": "testid", "value": "item-list"}, "expect": "Beta", "source": "spec:demo/spec.md#2-列表页"}
+  ]
+}

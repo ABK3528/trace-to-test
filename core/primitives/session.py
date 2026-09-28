@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import shutil
 import subprocess
@@ -18,7 +19,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..compile.anchors import SNAP_JS, ElementSnapshot
+from ..compile.anchors import ROLE_NAME_JS, SNAP_JS, ElementSnapshot
 
 DEFAULT_VIEWPORT = (1440, 900)
 
@@ -141,12 +142,12 @@ def _load_harness():
     """
     try:
         from browser_harness import helpers, recorder  # noqa: PLC0415
-        from browser_harness.admin import ensure_daemon  # noqa: PLC0415
+        from browser_harness.admin import ensure_daemon, restart_daemon  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - environment problem
         raise BrowserHarnessMissing(
             "browser-harness is not installed. Run: uv sync --extra browser"
         ) from exc
-    return helpers, recorder, ensure_daemon
+    return helpers, recorder, ensure_daemon, restart_daemon
 
 
 def reap_leaked_browsers(profile_dir: Path) -> int:
@@ -165,6 +166,32 @@ def reap_leaked_browsers(profile_dir: Path) -> int:
         return len(pids)
     except (subprocess.SubprocessError, OSError):
         return 0
+
+
+def locate_js(anchor) -> str:
+    """把锚点翻译成一条**数组定位表达式**（拼进 LOCATE_HELPERS 的 count/snapshot
+    探针里用）。
+
+    这是 resolve() 拼 JS 的唯一入口 —— 测试守卫也用它，所以守卫不可能再与实现
+    各自为政。锚点里的值一律 `json.dumps` 进 JS 字面量：手改过的 workflow 文件里
+    若出现引号/反斜杠/换行，不会拼出非法 JS 或被注入。
+
+    ⚠️ 只保证**语法正确**（合法 JS 且返回数组）。「语义对不对」（比如 testid 到底
+    查不查得到那个属性、role 的名字链两侧是否一致）不在这里保证 —— 那类 shape 不
+    一致靠 shape 测试 + 真回放兜底。
+    """
+    if anchor.by == "testid":
+        # data-test 也会在编译期产生 testid 锚点（SNAP_JS 两属性都读），
+        # 回放期必须两个属性都搜，否则只带 data-test 的元素永远 resolve 不到。
+        selector = "[data-testid=" + json.dumps(anchor.value) + "], [data-test=" + json.dumps(anchor.value) + "]"
+        return "[...document.querySelectorAll(" + json.dumps(selector) + ")]"
+    if anchor.by == "path":
+        return "[...document.querySelectorAll(" + json.dumps(anchor.value) + ")]"
+    if anchor.by == "text":
+        return "__tttFindByText(" + json.dumps(anchor.value) + ")"
+    if anchor.by == "role":
+        return "__tttFindByRole(" + json.dumps(anchor.role) + ", " + json.dumps(anchor.name) + ")"
+    raise ValueError(f"locate_js: unknown anchor.by {anchor.by!r}")
 
 
 class Session:
@@ -192,7 +219,9 @@ class Session:
                 / f"ttt-profile-{os.getpid()}-{next(_PROFILE_SEQ)}"
             )
         self.profile_dir = Path(profile_dir)
+        self._daemon_name = f"ttt-{os.getpid()}"
         self._bh = None
+        self._restart_daemon = None
 
     def __enter__(self) -> "Session":
         self.profile_dir.mkdir(parents=True, exist_ok=True)
@@ -213,11 +242,13 @@ class Session:
 
         # 🔴 顺序不能变：把 BU_NAME/BU_CDP_URL 写进 os.environ **之后**才 import
         #    browser_harness。NAME 是 import 时读一次的，写晚了就挂到用户浏览器上。
-        self._daemon_name = f"ttt-{os.getpid()}-{self._port}"
+        self._daemon_name = f"ttt-{os.getpid()}"
         os.environ.update(harness_env(self._daemon_name, self._port))
 
         try:
-            self._bh, self._recorder, ensure_daemon = _load_harness()
+            self._bh, self._recorder, ensure_daemon, restart_daemon = _load_harness()
+            self._restart_daemon = restart_daemon
+            restart_daemon(name=self._daemon_name)
             ensure_daemon(name=self._daemon_name)
             self._apply_viewport()
         except BaseException:
@@ -245,6 +276,10 @@ class Session:
         用户主 Chrome / 用户正在用的窗口没有这个参数，一个都不许动。
         """
         chrome = getattr(self, "_chrome", None)
+        restart_daemon = getattr(self, "_restart_daemon", None)
+        if restart_daemon is not None and self._daemon_name:
+            restart_daemon(name=self._daemon_name)
+            self._restart_daemon = None
         if chrome is not None and chrome.poll() is None:
             chrome.terminate()
             try:
@@ -372,23 +407,21 @@ class Session:
         """
         from ..compile.anchors import candidates, normalize, similarity  # 避免循环导入
 
-        locate = {
-            "testid": f"document.querySelector({anchor.value!r} and '[data-testid=\"'+{anchor.value!r}+'\"]')",
-            "path": f"document.querySelector({anchor.value!r})",
-            "text": f"__tttFindByText({anchor.value!r})",
-            "role": f"__tttFindByRole({anchor.role!r}, {anchor.name!r})",
-            "xy": None,
-        }[anchor.by]
-
         if anchor.by == "xy":
             x, y = (int(v) for v in anchor.value.split(","))
             snap = self.snapshot_at(x, y)
             return {"count": 1 if snap else 0, "snap": snap, "drift": ""}
 
+        locate = locate_js(anchor)
+
         count = int(self.js(LOCATE_HELPERS + f"(()=>{{ const r={locate}; "
-                         "return Array.isArray(r) ? r.length : (r ? 1 : 0); }})()") or 0)
+                         "return Array.isArray(r) ? r.length : (r ? 1 : 0); })()") or 0)
         if count == 1:
-            return {"count": 1, "snap": self._snapshot_js(LOCATE_HELPERS + f"(()=>{{const r={locate}; return Array.isArray(r)?r[0]:r;}})()"), "drift": ""}
+            # Helpers 已在上面那条 count 调用里装好；这里不再拼 LOCATE_HELPERS。
+            # 否则 `_snapshot_js` 会把 helpers 的 IIFE 当成 locate 表达式的值
+            # （helpers 返回 undefined ⇒ 快照永远为空）。
+            return {"count": 1, "snap": self._snapshot_js(
+                f"(()=>{{const r={locate}; return Array.isArray(r)?r[0]:r;}})()"), "drift": ""}
         if count > 1:
             return {"count": count, "snap": None, "drift": ""}
 
@@ -406,9 +439,12 @@ class Session:
 
 
 # 注入页面的定位辅助函数：文本匹配（归一化后精确）与 role+name 匹配。
+# 角色/名字/截断来自 ROLE_NAME_JS —— 与编译期 SNAP_JS 是同一份，避免两侧各写一份
+# "今天碰巧一样"的链（那是 role 锚点编译后永不命中的根因）。
 LOCATE_HELPERS = r"""
 (() => {
   if (window.__tttHelpersInstalled) return;
+""" + ROLE_NAME_JS + r"""
   const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   window.__tttVisible = el => {
     const r = el.getBoundingClientRect();
@@ -416,11 +452,11 @@ LOCATE_HELPERS = r"""
     return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
   };
   window.__tttFindByText = t => [...document.querySelectorAll('*')]
-      .filter(el => window.__tttVisible(el) && norm(el.textContent) === norm(t)
-                    && ![...el.children].some(c => norm(c.textContent) === norm(t)))[0] || null;
+      .filter(el => window.__tttVisible(el) && norm(clip80(el.textContent)) === norm(t)
+                    && ![...el.children].some(c => norm(clip80(c.textContent)) === norm(t)))[0] || null;
   window.__tttFindByRole = (role, name) => [...document.querySelectorAll('*')]
-      .filter(el => window.__tttVisible(el) && (el.getAttribute('role') === role)
-                    && norm(el.getAttribute('aria-label') || el.textContent) === norm(name));
+      .filter(el => window.__tttVisible(el) && (__tttRoleOf(el) === role)
+                    && norm(clip80(__tttNameOf(el))) === norm(name));
   window.__tttAllLabels = () => [...document.querySelectorAll('button,a,[role],label,input')]
       .filter(window.__tttVisible)
       .map(el => (el.getAttribute('aria-label') || el.textContent || el.getAttribute('placeholder') || '').trim())

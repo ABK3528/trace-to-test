@@ -2,6 +2,20 @@
 
 把一次真实浏览器录制编译成不依赖 LLM 的确定性回归。
 
+## 验收入口：`make demo`，不是 `make test`
+
+🔴 **`make demo` 是本框架的验收入口** —— 它真录一遍、编译、补全、回放三态，端到端走完整条链。
+
+🔴 **`make test` 不覆盖端到端主张。** `uv run pytest tests/` 跑的是机制层单测，其中四个端到端测试
+（`tests/test_demo_three_states.py`，需要真实浏览器）**默认跳过**，只有设置 `TTT_E2E=1` 才跑。
+所以看到满屏 `passed` 时，那 4 个 `skipped` 正是本框架的差异化（录制→编译→确定性回放）
+没有被执行的证据。要证明框架真能跑通，跑 `make demo`。
+
+```bash
+uv sync --extra browser --extra dev
+make demo
+```
+
 ## 六层映射与业务边界
 
 `core/`、`checks/` 与 `skills/` 是机制层，必须保持业务无关；项目的目标、操作方式与断言语义放在 `adapters/`。`scripts/portability_check.sh` 检查机制层是否混入项目专属词汇：
@@ -38,6 +52,7 @@ bash scripts/portability_check.sh
 ## 已知边界
 
 - `type_text` 暂不编译；探索流程优先使用 `fill_input`。
+- **`scroll` 事件按设计丢弃**：既不产生步骤，也不记 `Unresolved`。所以"滚动之后才点到的元素"会编译出一个点击，其目标可能仍在视口外 —— 回放时可能点空。要稳定的做法是在探索脚本里先把元素滚进视口（或用 `wait_for` 让引擎自己找），而不是依赖录制里的滚动。
 - `xy` 仅作为最后兜底锚点，使用时会产生 `WARN`。
 - v1 只覆盖 UI 轨。
 - **录制期点击竞态**：无头 Chrome 下约一成的合成点击不会触发 `dialog.showModal()`（`新建` 这类开弹窗的按钮尤其明显）。推荐做法是对弹窗状态 `wait_for`（例如等 `dialog[open]` 出现）而不是点完就假设它开了；demo 里那段重试只是把这个竞态吸收了，它只覆盖探索期 —— 回放期同样的点击没有任何东西吸收，`attempts=1` 的那些场景会直接红。

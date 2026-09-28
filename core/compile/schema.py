@@ -145,3 +145,74 @@ class Unresolved:
             candidates=tuple(Anchor.from_json(a) for a in d.get("candidates") or []),
             reason=str(d.get("reason") or ""),
         )
+
+
+@dataclass(frozen=True)
+class Check:
+    """一条断言。
+
+    `source` 是必填的期望值出处 —— 这是防 oracle 锁错的机制：
+    期望值只能来自外部（需求文档 / 夹具 / 手写），
+    绝不能是"编译时看到什么就写什么"。core/lint 会拒收 source 缺失
+    或形如 observed:* 的断言。
+    """
+    id: str
+    after_step: int
+    kind: str                                  # text_present | count
+    anchor: Anchor | None
+    expect: str
+    source: str
+    observed_at_compile: str = ""              # 只供人比对，永不参与回放判定
+
+    def to_json(self) -> dict:
+        return {
+            "id": self.id,
+            "after_step": self.after_step,
+            "kind": self.kind,
+            "anchor": self.anchor.to_json() if self.anchor else None,
+            "expect": self.expect,
+            "source": self.source,
+            "observed_at_compile": self.observed_at_compile,
+        }
+
+    @staticmethod
+    def from_json(d: dict) -> "Check":
+        return Check(
+            id=str(d.get("id") or ""),
+            after_step=int(d.get("after_step") or 0),
+            kind=str(d.get("kind") or ""),
+            anchor=Anchor.from_json(d["anchor"]) if d.get("anchor") else None,
+            expect=str(d.get("expect") or ""),
+            source=str(d.get("source") or ""),
+            observed_at_compile=str(d.get("observed_at_compile") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class Checks:
+    workflow: str
+    checks: tuple[Check, ...] = ()
+
+    def to_json(self) -> dict:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "workflow": self.workflow,
+            "checks": [c.to_json() for c in self.checks],
+        }
+
+    @staticmethod
+    def from_json(d: dict) -> "Checks":
+        version = d.get("schema_version")
+        if version != SCHEMA_VERSION:
+            raise ValueError(f"checks schema_version {version!r} != {SCHEMA_VERSION}")
+        return Checks(
+            workflow=str(d.get("workflow") or ""),
+            checks=tuple(Check.from_json(c) for c in d.get("checks") or []),
+        )
+
+    @staticmethod
+    def load(path) -> "Checks":
+        import json  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        return Checks.from_json(json.loads(Path(path).read_text(encoding="utf-8")))

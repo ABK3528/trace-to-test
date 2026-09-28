@@ -111,7 +111,7 @@ def test_a_two_column_whitelist_row_is_a_configuration_error(tmp_path):
     repo = _fake_repo(tmp_path, words="modelgo\n", dirs=["core"])
     (repo / "core" / "a.py").write_text("# modelgo\n", encoding="utf-8")
     (repo / "scripts" / "portability_whitelist.txt").write_text(
-        "core/a\\.py\tmodelgo\n", encoding="utf-8")
+        "core/a\\.py\tmodelgo\n", encoding="utf-8")           # 只有两列
     result = _run_in(repo)
     assert result.returncode == 2
     assert "3 tab-separated columns" in result.stderr
@@ -124,7 +124,31 @@ def test_an_invalid_whitelist_regex_is_a_configuration_error(tmp_path):
         "core/a\\.py\t[unclosed\tbroken regex\n", encoding="utf-8")
     result = _run_in(repo)
     assert result.returncode == 2
-    assert "invalid term regex" in result.stderr
+    assert "not a valid regex" in result.stderr
+
+
+def test_a_whitelist_row_with_an_empty_middle_column_is_a_configuration_error(tmp_path):
+    """回归：bash 的 read + IFS=$'\\t' 会折叠连续 tab（tab 属空白类），
+    空列被静默吞掉、后面的列整体左移 —— 实测 term 会变成 `.*` 从而豁免一切。
+    所以列校验必须交给 awk（单字符 FS 按字面切），这条测试就是钉死这一点。"""
+    repo = _fake_repo(tmp_path, words="modelgo\n", dirs=["core"])
+    (repo / "core" / "a.py").write_text("# modelgo\n", encoding="utf-8")
+    (repo / "scripts" / "portability_whitelist.txt").write_text(
+        "core/a\\.py\t\t.*\treason\n", encoding="utf-8")     # 中间列是空的
+    result = _run_in(repo)
+    assert result.returncode == 2
+    assert "empty column" in result.stderr
+
+
+def test_a_term_regex_that_matches_the_empty_string_is_rejected(tmp_path):
+    """能匹配空串的正则（.* / a*）会豁免一切，和空列是同一类漏法。"""
+    repo = _fake_repo(tmp_path, words="modelgo\n", dirs=["core"])
+    (repo / "core" / "a.py").write_text("# modelgo\n", encoding="utf-8")
+    (repo / "scripts" / "portability_whitelist.txt").write_text(
+        "core/a\\.py\t.*\texempts everything\n", encoding="utf-8")
+    result = _run_in(repo)
+    assert result.returncode == 2
+    assert "matches the empty string" in result.stderr
 
 
 def test_a_partial_set_of_scan_dirs_is_fine(tmp_path):
@@ -137,7 +161,7 @@ def test_grep_error_is_a_configuration_error(tmp_path):
     repo = _fake_repo(tmp_path, words="modelgo\n", dirs=["core"])
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for command in ["awk", "dirname", "mktemp", "cat"]:
+    for command in ["awk", "dirname", "mktemp", "cat", "rm"]:
         (bin_dir / command).symlink_to(shutil.which(command))
     fake_grep = bin_dir / "grep"
     fake_grep.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")

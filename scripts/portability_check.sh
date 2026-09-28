@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # 扫机制层（core/ checks/ skills/），出现禁用词即失败。
-# 退出码：0 = 零命中；1 = 有命中；2 = 配置/用法错误（含"扫了个寂寞"）。
+# 退出码：0 = 零命中；1 = 有命中；2 = 配置/用法错误（含“扫了个寂寞”）。
 #
-# 🔴 三条 fail-open 路径必须堵死，否则这个闸会安静地绿：
-#   ① 词表为空          → 闸没在守任何东西
-#   ② 一个扫描目录都没有 → 脚本指错了地方（不是"干净"）
-#   ③ grep 出错被 || true 吞掉 → 把"搜失败"当成"没搜到"
-# 还有一条：白名单只豁免 (文件, 词) 二元组，绝不豁免整行。
+# fail-open 路径必须堵死：空词表、零扫描目录、grep 搜索错误、白名单列错位。
+# 白名单只豁免 (文件, 词) 二元组，绝不豁免整行。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,60 +14,90 @@ SCAN_DIRS=(core checks skills)
 [[ -f "$WORDS" ]] || { echo "missing $WORDS" >&2; exit 2; }
 [[ -f "$WHITELIST" ]] || { echo "missing $WHITELIST" >&2; exit 2; }
 
-# 分阶段落地允许只存在一部分扫描目录（skills/ 后到），但一个都没有就是走错树了
 existing=()
 for d in "${SCAN_DIRS[@]}"; do [[ -d "$d" ]] && existing+=("$d"); done
 [[ ${#existing[@]} -gt 0 ]] || {
   echo "none of ${SCAN_DIRS[*]} exist — wrong tree?" >&2; exit 2; }
 
+# Build the alternation while allowing an empty/comment-only file to reach the explicit error.
 pattern=$(awk '!/^[[:space:]]*(#|$)/ { if (terms++) printf "|"; printf "%s", $0 }' "$WORDS")
 [[ -n "$pattern" ]] || {
   echo "$WORDS has no terms — the gate would pass vacuously" >&2; exit 2; }
 
-# 白名单必须先校验再使用。少于三列会让词正则变成空串 —— 空正则匹配一切，
-# 等于静默豁免该文件的所有命中。畸形正则也必须作为配置错误拒绝。
-while IFS=$'\t' read -r path_re term_re wl_reason; do
-  [[ -z "${path_re:-}" || "$path_re" == \#* ]] && continue
-  [[ -n "${term_re:-}" && -n "${wl_reason:-}" ]] || {
-    echo "whitelist row needs 3 tab-separated columns (path<TAB>term<TAB>reason): $path_re" >&2
-    exit 2; }
-  # grep 对空输入：合法正则 → 1（无匹配），非法正则 → 2
-  set +e
-  printf '' | grep -qE -- "$term_re" 2>/dev/null; rc_term=$?
-  printf '' | grep -qE -- "$path_re" 2>/dev/null; rc_path=$?
-  set -e
-  [[ $rc_term -eq 1 ]] || { echo "whitelist row has an invalid term regex: $term_re" >&2; exit 2; }
-  [[ $rc_path -eq 1 ]] || { echo "whitelist row has an invalid path regex: $path_re" >&2; exit 2; }
-done < "$WHITELIST"
+HITS=$(mktemp)
+WINPUT=$(mktemp)
+KEPT=$(mktemp)
+trap 'rm -f "$HITS" "$WINPUT" "$KEPT"' EXIT
 
-# -o 只吐命中的词，-H -n 给 文件:行:词
+# Validate column structure with awk: bash read + tab IFS collapses adjacent whitespace delimiters.
+awk -F '\t' -v out="$WINPUT" '
+  /^[[:space:]]*(#|$)/ { next }
+  {
+    for (i = 1; i <= NF; i++) {
+      if ($i == "") {
+        printf "whitelist line %d: empty column\n", NR > "/dev/stderr"
+        bad = 1; next
+      }
+    }
+  }
+  NF != 3 {
+    printf "whitelist line %d: need exactly 3 tab-separated columns (path<TAB>term<TAB>reason), got %d\n", NR, NF > "/dev/stderr"
+    bad = 1; next
+  }
+  $1 == "" || $2 == "" || $3 == "" {
+    printf "whitelist line %d: empty column\n", NR > "/dev/stderr"
+    bad = 1; next
+  }
+  { print > out }
+  END { exit bad ? 1 : 0 }
+' "$WHITELIST" || exit 2
+
+# A regex must be valid and must not match the empty string: 1=valid/no match, 0=matches empty, 2=invalid.
+check_re() {
+  local re="$1" label="$2" rc
+  set +e
+  printf '\n' | grep -qE -- "$re" 2>/dev/null
+  rc=$?
+  set -e
+  case $rc in
+    1) return 0 ;;
+    0) echo "whitelist $label matches the empty string ($re) — it would exempt everything" >&2; exit 2 ;;
+    *) echo "whitelist $label is not a valid regex ($re)" >&2; exit 2 ;;
+  esac
+}
+
+while IFS=$'\t' read -r path_re term_re _reason; do
+  [[ -z "$path_re" ]] && continue
+  check_re "$path_re" "path regex"
+  check_re "$term_re" "term regex"
+done < "$WINPUT"
+
+# -o only emits matched terms; -H -n provides file:line:term.
 set +e
-hits=$(grep -rHoEn -i "\\b(${pattern})\\b" "${existing[@]}" 2>/dev/null)
+grep -rHoEn -i "\\b(${pattern})\\b" "${existing[@]}" > "$HITS" 2>/dev/null
 rc=$?
 set -e
-# grep 约定：0 = 有命中，1 = 无命中，>=2 = 出错
 [[ $rc -le 1 ]] || { echo "grep failed with exit $rc" >&2; exit 2; }
 
-if [[ -z "$hits" ]]; then
+if [[ ! -s "$HITS" ]]; then
   echo "✅ portability check passed (${existing[*]})"
   exit 0
 fi
 
-tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
 while IFS= read -r hit; do
   [[ -z "$hit" ]] && continue
   file=${hit%%:*}; rest=${hit#*:}; term=${rest#*:}
   exempt=0
   while IFS=$'\t' read -r path_re term_re _reason; do
-    [[ -z "${path_re:-}" || "$path_re" == \#* ]] && continue
+    [[ -z "$path_re" ]] && continue
     if [[ "$file" =~ $path_re ]] && [[ "$term" =~ $term_re ]]; then exempt=1; break; fi
-  done < "$WHITELIST"
-  [[ $exempt -eq 1 ]] || printf '%s\n' "$hit" >> "$tmp"
-done <<< "$hits"
+  done < "$WINPUT"
+  [[ $exempt -eq 1 ]] || printf '%s\n' "$hit" >> "$KEPT"
+done < "$HITS"
 
-if [[ -s "$tmp" ]]; then
+if [[ -s "$KEPT" ]]; then
   echo "🔴 portability check FAILED — 机制层出现业务词：" >&2
-  cat "$tmp" >&2
+  cat "$KEPT" >&2
   exit 1
 fi
 echo "✅ portability check passed (${existing[*]})"

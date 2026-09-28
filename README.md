@@ -6,9 +6,10 @@
 
 🔴 **`make demo` 是本框架的验收入口** —— 它真录一遍、编译、补全、回放三态，端到端走完整条链。
 
-🔴 **`make test` 不覆盖端到端主张。** `uv run pytest tests/` 跑的是机制层单测，其中四个端到端测试
-（`tests/test_demo_three_states.py`，需要真实浏览器）**默认跳过**，只有设置 `TTT_E2E=1` 才跑。
-所以看到满屏 `passed` 时，那 4 个 `skipped` 正是本框架的差异化（录制→编译→确定性回放）
+🔴 **`make test` 不覆盖端到端主张。** `uv run pytest tests/` 跑的是机制层单测，其中端到端测试
+（`tests/test_demo_three_states.py` 四条，加本波新增的 `tests/test_title_named_anchor_drift_proof.py`
+一条，共五条 —— 都需要真实浏览器）**默认跳过**，只有设置 `TTT_E2E=1` 才跑。
+所以看到满屏 `passed` 时，那 5 个 `skipped` 正是本框架的差异化（录制→编译→确定性回放）
 没有被执行的证据。要证明框架真能跑通，跑 `make demo`。
 
 ```bash

@@ -4,6 +4,7 @@ import sys
 import types
 from pathlib import Path
 
+from core.compile.schema import Anchor
 from core.primitives import session as session_mod
 from core.primitives.session import (
     Session,
@@ -54,6 +55,33 @@ def test_www_prefix_does_not_bypass_the_gate():
 def test_a_lookalike_domain_does_not_pass():
     with pytest.raises(TargetNotAllowed):
         assert_target_allowed("https://notexample.com", allow_hosts=("example.com",))
+
+
+def test_goto_rechecks_gate_for_absolute_urls(monkeypatch):
+    session = Session("http://127.0.0.1:8712")
+    calls = []
+    monkeypatch.setattr(session, "_act", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(TargetNotAllowed, match="not in the allow-list"):
+        session.goto("https://elsewhere.example")
+    assert calls == []
+
+
+def test_goto_allows_configured_host_and_resolves_relative_paths(monkeypatch):
+    session = Session("http://127.0.0.1:8712", allow_hosts=("example.com",))
+    calls = []
+    monkeypatch.setattr(session, "_act", lambda *args, **kwargs: calls.append(args))
+    session.goto("https://example.com/page")
+    session.goto("/login")
+    assert calls[0] == ("new_tab", "https://example.com/page")
+    assert calls[2] == ("new_tab", "http://127.0.0.1:8712/login")
+
+
+def test_default_profile_is_unique_per_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    first = Session("http://127.0.0.1:8712")
+    second = Session("http://127.0.0.1:8712")
+    assert first.profile_dir != second.profile_dir
+    assert first.profile_dir.name.startswith(f"ttt-profile-{os.getpid()}-")
 
 
 # —— 隔离：这是我们自起 Chrome 的全部依据，不能只写在注释里 ——
@@ -108,6 +136,21 @@ def test_harness_env_points_the_daemon_at_our_own_chrome():
     assert env == {"BU_NAME": "ttt-test", "BU_CDP_URL": "http://127.0.0.1:9333"}
 
 
+def test_session_structurally_satisfies_the_locator_protocol():
+    """Guard the structural contract, including a non-vacuity check."""
+    import inspect
+
+    from core.replay import engine
+
+    protocol_members = {
+        name for name, member in inspect.getmembers(engine.Locator, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    assert protocol_members, "没读到 Locator 的任何成员 —— 这条守卫会空过"
+    missing = sorted(n for n in protocol_members if not callable(getattr(Session, n, None)))
+    assert not missing, f"Session 未实现 Locator 的成员：{missing}"
+
+
 def test_reap_matches_the_key_name_not_the_bare_path(tmp_path):
     """🔴 回归：匹配串必须带键名 user-data-dir=。裸路径会命中"命令行里恰好
     提到这个路径"的无关进程（包括正在跑的这条 shell），是事故不是清理。"""
@@ -149,6 +192,27 @@ def test_act_reports_wait_for_element_with_the_timeout_positionally():
     assert helper == "wait_for_element"
     assert args == ("#items", s.timeout)
     assert kwargs == {"visible": True}
+
+
+def test_click_at_anchor_clicks_the_centre_of_the_resolved_element():
+    from core.compile.anchors import ElementSnapshot
+
+    snap = ElementSnapshot(tag="button", role="", name="", text="", testid="b",
+                           attrs={}, path="", rect={"x": 100, "y": 50, "w": 40, "h": 20})
+    s = _StubSession({"count": 1, "snap": snap, "drift": ""})
+    s.clicks = []
+    s.click_xy = lambda x, y: s.clicks.append((x, y))
+    s.click_at_anchor(Anchor(by="testid", value="b"))
+    assert s.clicks == [(120, 60)]
+
+
+def test_click_at_anchor_refuses_when_the_anchor_did_not_resolve():
+    s = _StubSession({"count": 0, "snap": None, "drift": ""})
+    s.clicks = []
+    s.click_xy = lambda x, y: s.clicks.append((x, y))
+    with pytest.raises(AssertionError, match="did not resolve"):
+        s.click_at_anchor(Anchor(by="testid", value="b"))
+    assert s.clicks == []
 
 
 def test_session_applies_the_requested_viewport():
@@ -215,15 +279,17 @@ def test_enter_sets_isolated_harness_environment_before_admin_import(monkeypatch
     monkeypatch.setattr(session_mod, "find_chrome", lambda: "/fake/chrome")
     monkeypatch.setattr(session_mod, "read_devtools_port", lambda profile, proc, timeout: 9555)
     monkeypatch.setattr(session_mod, "reap_leaked_browsers", lambda profile: 0)
-    monkeypatch.setattr(session_mod, "_load_harness", lambda: (
-        types.SimpleNamespace(cdp=lambda *args, **kwargs: None),
-        object(),
-    ))
 
     def ensure_daemon(name):
         assert os.environ["BU_NAME"] == name
         assert os.environ["BU_CDP_URL"] == "http://127.0.0.1:9555"
         calls.append(("ensure_daemon", name))
+
+    monkeypatch.setattr(session_mod, "_load_harness", lambda: (
+        types.SimpleNamespace(cdp=lambda *args, **kwargs: None),
+        object(),
+        ensure_daemon,
+    ))
 
     monkeypatch.setitem(sys.modules, "browser_harness.admin", types.SimpleNamespace(ensure_daemon=ensure_daemon))
     s = Session("http://127.0.0.1:8712", profile_dir=tmp_path)

@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import subprocess
@@ -20,6 +21,9 @@ from urllib.parse import urlparse
 from ..compile.anchors import SNAP_JS, ElementSnapshot
 
 DEFAULT_VIEWPORT = (1440, 900)
+
+# Keep automatically assigned profile names unique within this process.
+_PROFILE_SEQ = itertools.count()
 
 
 class TargetNotAllowed(Exception):
@@ -137,11 +141,12 @@ def _load_harness():
     """
     try:
         from browser_harness import helpers, recorder  # noqa: PLC0415
-    except ImportError as exc:  # pragma: no cover - 环境问题
+        from browser_harness.admin import ensure_daemon  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - environment problem
         raise BrowserHarnessMissing(
             "browser-harness is not installed. Run: uv sync --extra browser"
         ) from exc
-    return helpers, recorder
+    return helpers, recorder, ensure_daemon
 
 
 def reap_leaked_browsers(profile_dir: Path) -> int:
@@ -180,7 +185,13 @@ class Session:
         self.viewport = viewport
         self.headed = headed
         self.timeout = timeout
-        self.profile_dir = Path(profile_dir or Path(tempfile.gettempdir()) / "ttt-profile")
+        self._allow_hosts = allow_hosts
+        if profile_dir is None:
+            profile_dir = (
+                Path(tempfile.gettempdir())
+                / f"ttt-profile-{os.getpid()}-{next(_PROFILE_SEQ)}"
+            )
+        self.profile_dir = Path(profile_dir)
         self._bh = None
 
     def __enter__(self) -> "Session":
@@ -206,9 +217,8 @@ class Session:
         os.environ.update(harness_env(self._daemon_name, self._port))
 
         try:
-            from browser_harness.admin import ensure_daemon  # noqa: PLC0415
+            self._bh, self._recorder, ensure_daemon = _load_harness()
             ensure_daemon(name=self._daemon_name)
-            self._bh, self._recorder = _load_harness()
             self._apply_viewport()
         except BaseException:
             self._shutdown()
@@ -274,11 +284,37 @@ class Session:
 
     def goto(self, path: str) -> None:
         url = path if path.startswith("http") else f"{self.base_url}{path}"
+        assert_target_allowed(url, self._allow_hosts)
         self._act("new_tab", url)
         self._act("wait_for_load", self.timeout)
 
     def click_xy(self, x: int, y: int) -> None:
         self._act("click_at_xy", int(x), int(y))
+
+    def click_at_anchor(self, anchor) -> None:
+        """Click the center of the element resolved by an anchor."""
+        got = self.resolve(anchor)
+        snap = got.get("snap")
+        if not snap:
+            raise AssertionError(
+                f"anchor {anchor.by}={anchor.value or anchor.name!r} did not resolve"
+            )
+        rect = snap.rect or {}
+        x = int(rect.get("x", 0)) + int(rect.get("w", 0)) // 2
+        y = int(rect.get("y", 0)) + int(rect.get("h", 0)) // 2
+        self.click_xy(x, y)
+
+    def click_text(self, text: str) -> None:
+        """Click the center of the visible element with this exact text."""
+        self.js(LOCATE_HELPERS)
+        box = self.js(
+            "(()=>{const el=__tttFindByText(" + repr(text) + ");"
+            "if(!el)return null;const r=el.getBoundingClientRect();"
+            "return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()"
+        )
+        if not box:
+            raise AssertionError(f"no visible element with text {text!r}")
+        self.click_xy(int(box["x"]), int(box["y"]))
 
     def fill(self, selector: str, text: str) -> None:
         self._act("fill_input", selector, text, self.timeout)

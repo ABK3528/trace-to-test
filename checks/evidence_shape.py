@@ -49,11 +49,11 @@ def lint_results(records: list[dict]) -> tuple[str, ...]:
             if not record.get("bug"):
                 violations.append(f"{tc}: failed without a bug id")
             if lane == "ui":
-                body = " ".join(str(path) for path in screenshots) + " " + str(record.get("bug_body") or "")
+                body = str(record.get("bug_body") or "")
                 if not _EMBEDDED_IMAGE.search(body):
                     violations.append(
-                        f"{tc}: ui failure needs a screenshot embedded in the bug, "
-                        "not just a local path"
+                        f"{tc}: ui failure needs a screenshot embedded in the bug body, "
+                        "not just a path or a screenshot entry"
                     )
 
         if status == "blocked":

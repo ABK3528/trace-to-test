@@ -85,7 +85,12 @@ def run(workflow: Workflow, locator: Locator, checks: Checks | None = None) -> R
             return RunResult(workflow.id, status, reason=reason, steps=tuple(outcomes))
 
         for check in by_step.get(step.n, []):
-            check_outcome = _evaluate(check, locator)
+            try:
+                check_outcome = _evaluate(check, locator)
+            except Exception:
+                # Check evaluation can fail because the environment or page is not ready.
+                return RunResult(workflow.id, FAIL_ENV, reason="environment",
+                                 steps=tuple(outcomes), checks=tuple(check_outcomes))
             check_outcomes.append(check_outcome)
             if not check_outcome.ok:
                 return RunResult(workflow.id, FAIL_PRODUCT, reason="assertion",

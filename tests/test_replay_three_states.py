@@ -29,7 +29,8 @@ class FakeLocator:
         self.calls.append(f"click@{anchor.by}:{anchor.value or anchor.name}")
 
     def fill(self, selector, text):
-        self.calls.append(f"fill:{selector}")
+        # Record the actual value so tests can pin that env data, not recorded plaintext, was used.
+        self.calls.append(f"fill:{selector}={text}")
 
     def press(self, key):
         self.calls.append(f"press:{key}")
@@ -42,6 +43,7 @@ class FakeLocator:
         return None
 
     def resolve(self, anchor):
+        self._maybe_raise("resolve")
         key = anchor.value or anchor.name
         self.resolved.append(key)
         return self.resolve_script.get(key, {"count": 1, "snap": None, "drift": ""})

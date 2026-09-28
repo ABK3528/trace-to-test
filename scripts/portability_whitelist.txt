@@ -1,3 +1,1 @@
-<target>	占位符，机制层用它指代"被测目标"，非业务词
-<platform>	占位符
-<lane>	占位符，指用例分轨
+# path-regex\tterm-regex\treason

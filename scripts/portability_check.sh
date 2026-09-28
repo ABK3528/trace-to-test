@@ -27,6 +27,22 @@ pattern=$(awk '!/^[[:space:]]*(#|$)/ { if (terms++) printf "|"; printf "%s", $0 
 [[ -n "$pattern" ]] || {
   echo "$WORDS has no terms — the gate would pass vacuously" >&2; exit 2; }
 
+# 白名单必须先校验再使用。少于三列会让词正则变成空串 —— 空正则匹配一切，
+# 等于静默豁免该文件的所有命中。畸形正则也必须作为配置错误拒绝。
+while IFS=$'\t' read -r path_re term_re wl_reason; do
+  [[ -z "${path_re:-}" || "$path_re" == \#* ]] && continue
+  [[ -n "${term_re:-}" && -n "${wl_reason:-}" ]] || {
+    echo "whitelist row needs 3 tab-separated columns (path<TAB>term<TAB>reason): $path_re" >&2
+    exit 2; }
+  # grep 对空输入：合法正则 → 1（无匹配），非法正则 → 2
+  set +e
+  printf '' | grep -qE -- "$term_re" 2>/dev/null; rc_term=$?
+  printf '' | grep -qE -- "$path_re" 2>/dev/null; rc_path=$?
+  set -e
+  [[ $rc_term -eq 1 ]] || { echo "whitelist row has an invalid term regex: $term_re" >&2; exit 2; }
+  [[ $rc_path -eq 1 ]] || { echo "whitelist row has an invalid path regex: $path_re" >&2; exit 2; }
+done < "$WHITELIST"
+
 # -o 只吐命中的词，-H -n 给 文件:行:词
 set +e
 hits=$(grep -rHoEn -i "\\b(${pattern})\\b" "${existing[@]}" 2>/dev/null)

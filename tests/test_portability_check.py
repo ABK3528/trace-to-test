@@ -59,18 +59,16 @@ def test_whitelisted_placeholder_is_allowed():
 
 # —— 🔴 白名单不许退化成"整行豁免" ——
 
-def test_a_line_carrying_both_a_placeholder_and_a_business_word_is_still_a_hit(tmp_path):
+def test_a_line_carrying_both_a_placeholder_and_a_business_word_is_still_a_hit():
     """整行豁免的经典漏法：占位符把同行的业务词一起带过去。"""
-    repo = _fake_repo(tmp_path, words="modelgo\n", dirs=["core"])
-    planted = repo / "core" / "_planted_mixed.py"
+    planted = ROOT / "core" / "_planted_mixed.py"
     planted.write_text("TARGET = '<target>'  # never say modelgo here\n", encoding="utf-8")
-    (repo / "scripts" / "portability_whitelist.txt").write_text(
-        "core/_planted_mixed\\.py\t<target>\tplaceholder occurrence is allowed\n",
-        encoding="utf-8",
-    )
-    result = _run_in(repo)
-    assert result.returncode == 1
-    assert "modelgo" in result.stderr
+    try:
+        result = run_check()
+        assert result.returncode == 1
+        assert "modelgo" in result.stderr
+    finally:
+        planted.unlink()
 
 
 def test_a_whitelisted_file_and_term_pair_is_exempt(tmp_path):
@@ -106,6 +104,27 @@ def test_an_empty_word_list_is_a_configuration_error(tmp_path):
     result = _run_in(repo)
     assert result.returncode == 2
     assert "vacuous" in result.stderr
+
+
+def test_a_two_column_whitelist_row_is_a_configuration_error(tmp_path):
+    """空词正则匹配一切 —— 少一列就是静默豁免整文件，必须报错。"""
+    repo = _fake_repo(tmp_path, words="modelgo\n", dirs=["core"])
+    (repo / "core" / "a.py").write_text("# modelgo\n", encoding="utf-8")
+    (repo / "scripts" / "portability_whitelist.txt").write_text(
+        "core/a\\.py\tmodelgo\n", encoding="utf-8")
+    result = _run_in(repo)
+    assert result.returncode == 2
+    assert "3 tab-separated columns" in result.stderr
+
+
+def test_an_invalid_whitelist_regex_is_a_configuration_error(tmp_path):
+    repo = _fake_repo(tmp_path, words="modelgo\n", dirs=["core"])
+    (repo / "core" / "a.py").write_text("# modelgo\n", encoding="utf-8")
+    (repo / "scripts" / "portability_whitelist.txt").write_text(
+        "core/a\\.py\t[unclosed\tbroken regex\n", encoding="utf-8")
+    result = _run_in(repo)
+    assert result.returncode == 2
+    assert "invalid term regex" in result.stderr
 
 
 def test_a_partial_set_of_scan_dirs_is_fine(tmp_path):

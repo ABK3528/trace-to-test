@@ -91,22 +91,27 @@ def test_the_mechanism_layer_imports_nothing_unexpected():
 
 def test_only_the_browser_layer_may_touch_the_browser_driver():
     """browser_harness is confined to core/primitives; replay and compile stay browser-independent."""
+    scanned = 0
     for path in _mechanism_files():
+        scanned += 1
         if "browser_harness" not in _imported_modules(path):
             continue
         assert path.relative_to(ROOT).parts[:2] == ("core", "primitives"), (
             f"{path.relative_to(ROOT)} 引入了 browser_harness，但它不在 core/primitives/"
         )
+    assert scanned > 0, "没扫到任何机制层文件 —— 这条守卫会空过"
 
 
 def test_the_replay_and_compile_layers_use_nothing_but_stdlib_and_core():
     """Replay and compile are the zero-LLM boundary; no third-party deps are allowed."""
     allowed = set(sys.stdlib_module_names) | {"core"}
-    checked = 0
+    seen = {"core.replay": 0, "core.compile": 0}
     for path in _mechanism_files():
-        if path.relative_to(ROOT).parts[:2] not in (("core", "replay"), ("core", "compile")):
+        parts = path.relative_to(ROOT).parts[:2]
+        if parts not in (("core", "replay"), ("core", "compile")):
             continue
-        checked += 1
+        seen[".".join(parts)] += 1
         residual = _imported_modules(path) - allowed
         assert not residual, f"{path.relative_to(ROOT)} 在零 LLM 层引入了非标准库依赖 {sorted(residual)}"
-    assert checked > 0, "没有扫到 core/replay 或 core/compile —— 这条守卫会空过"
+    for layer, count in seen.items():
+        assert count > 0, f"{layer}/ 下一个文件都没扫到 —— 这一层的守卫会空过"

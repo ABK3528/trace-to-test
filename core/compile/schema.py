@@ -1,6 +1,7 @@
-"""workflow / checks / unresolved 的数据契约（spec §4.3）。
+"""workflow / step / anchor / unresolved 的数据契约（spec §4.3）。
 
-三个都是纯数据 + JSON 往返，不含任何浏览器或业务逻辑。
+都是纯数据 + JSON 往返，不含任何浏览器或业务逻辑。
+断言的 sidecar（Check / Checks）由 Task 6 追加到本模块 —— 本 Task 不定义它们。
 """
 from __future__ import annotations
 
@@ -63,7 +64,8 @@ class Step:
         for key in ("path", "selector", "value_ref", "text", "key"):
             if getattr(self, key):
                 out[key] = getattr(self, key)
-        if self.xy:
+        # A click at the top-left corner is a valid (but falsy) (0, 0) tuple.
+        if self.xy is not None:
             out["xy"] = list(self.xy)
         if self.action == "wait_for":
             out["state"] = self.state
@@ -81,7 +83,7 @@ class Step:
             text=str(d.get("text") or ""),
             key=str(d.get("key") or ""),
             state=str(d.get("state") or "visible"),
-            xy=tuple(d["xy"]) if d.get("xy") else None,
+            xy=tuple(d["xy"]) if d.get("xy") is not None else None,
         )
 
 

@@ -20,6 +20,9 @@ def test_step_round_trips_including_xy():
     assert restored.anchor == step.anchor
     assert restored == step
 
+    zero_xy = Step(n=1, action="click", xy=(0, 0))
+    assert Step.from_json(zero_xy.to_json()) == zero_xy
+
 
 def test_step_without_xy_round_trips():
     assert Step.from_json(Step(n=1, action="goto", path="/login").to_json()).xy is None

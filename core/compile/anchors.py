@@ -17,6 +17,8 @@ from .schema import Anchor
 ANCHOR_PRIORITY: tuple[str, ...] = ("testid", "role", "text", "path", "xy")
 DRIFT_THRESHOLD = 0.7
 _MAX_TEXT = 80
+# 公共段短于这个长度就不算"文案改写"——否则短标签被包含即得满分
+_MIN_PARTIAL_CHARS = 2
 
 # 在页面里取「这个元素是什么」。返回结构必须与 ElementSnapshot 的字段对齐。
 SNAP_JS = r"""
@@ -142,7 +144,12 @@ def normalize(text: str) -> str:
 
 
 def similarity(a: str, b: str) -> float:
-    """归一化之后的序列相似度 ∈ [0, 1]，兼容增加前后缀的文案改写。"""
+    """归一化之后的序列相似度 ∈ [0, 1]，对"前后加字的文案改写"也认。
+
+    纯 SequenceMatcher.ratio() 会稀释短标签的前后扩展（"登录" vs "立即登录"
+    只有 4/6 ≈ 0.667，低于 0.7 阈值），因此也考虑最长公共连续段相对短串的比例。
+    为避免单字符偶然包含产生假匹配，partial 项要求最长公共段至少两个字符。
+    """
     na, nb = normalize(a), normalize(b)
     if not na and not nb:
         return 1.0
@@ -151,8 +158,7 @@ def similarity(a: str, b: str) -> float:
 
     matcher = SequenceMatcher(None, na, nb)
     ratio = matcher.ratio()
-    # Short copy edits often add context around an otherwise unchanged label
-    # (e.g. "登录" → "立即登录"). Measure shared content against the shorter
-    # label as well as whole-string similarity so this remains detectable.
-    partial = matcher.find_longest_match().size / min(len(na), len(nb))
-    return max(ratio, partial)
+    longest = matcher.find_longest_match().size
+    if longest < _MIN_PARTIAL_CHARS:
+        return ratio
+    return max(ratio, longest / min(len(na), len(nb)))

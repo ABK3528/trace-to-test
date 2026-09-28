@@ -24,5 +24,12 @@ def test_unrelated_labels_score_below_threshold():
     assert similarity("新建", "删除") < DRIFT_THRESHOLD
 
 
+def test_a_short_label_contained_in_a_longer_unrelated_one_is_not_a_match():
+    """回归：不设最短公共段下限时，"A" 完整包含在 "Archive" 里会得 1.0，
+    阈值就失去鉴别力，任何带 A 的标签都会被当成同一颗按钮。"""
+    assert similarity("A", "Archive") < DRIFT_THRESHOLD
+    assert similarity("编辑", "编辑器偏好设置") >= DRIFT_THRESHOLD   # 真·文案扩展仍要认
+
+
 def test_threshold_is_the_documented_value():
     assert DRIFT_THRESHOLD == 0.7

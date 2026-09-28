@@ -52,14 +52,17 @@ def _explore(base_url: str) -> Path:
         s.click_text("登 录")
         s.wait_for('[data-loaded="true"]')
         s.click_text("新建")
-        # 🔴 无头 Chrome 下合成点击偶发不触发 `<dialog>.showModal()`（约一成概率，
-        #    负载高时更频），弹窗没弹出来，"确定" 就不可见。这里做一次**非记账**的
-        #    重试：裸 click_at_xy 不经过 _act，录制里仍只有一次"新建"点击，
-        #    编译产物不会被多塞一步。等 __tttFindByText('确定') 命中（= 弹窗已打开
-        #    且按钮可见、已布局）再继续。
-        from core.primitives.session import LOCATE_HELPERS
+        # 🔴 无头 Chrome 下合成点击偶发不触发 `<dialog>.showModal()`，弹窗没弹出来，
+        #    "确定" 就不可见。这里做一次**非记账**的重试：裸 click_at_xy 不经过 _act，
+        #    录制里仍只有一次"新建"点击，编译产物不会被多塞一步。
+        #    🔴 等待条件是**弹窗自己的状态**（`dialog[open]`），不是"确定按钮可见已布局"。
+        #    等按钮可见会把"弹窗已开、内容还没布局好"误当成"弹窗没开"，继续点、
+        #    烧掉死线，然后 click_text("确定") 报"不可见"。README 已知边界里推荐的
+        #    正是 `dialog[open]`。
         deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not s.js(LOCATE_HELPERS + "(__tttFindByText('确定') !== null)"):
+        while time.monotonic() < deadline and not s.js(
+            "(document.querySelector('dialog[open]') !== null)"
+        ):
             box = s.js(
                 "(()=>{const el=document.getElementById('open-create'); if(!el)return null;"
                 "const r=el.getBoundingClientRect();"
@@ -68,6 +71,21 @@ def _explore(base_url: str) -> Path:
             if box:
                 s._bh.click_at_xy(int(box["x"]), int(box["y"]))
             time.sleep(0.1)
+        # 死线用尽仍没等到 dialog[open]：把弹窗真实状态与按钮的框抓下来，别让它
+        # 在 click_text 里以"确定不可见"这种后置症状闷掉 —— 要能分清"弹窗从没开"
+        # 还是"弹窗开了、只有按钮滞后"。
+        if not s.js("(document.querySelector('dialog[open]') !== null)"):
+            probe = s.js(
+                "(function(){const dlg=document.getElementById('dlg');"
+                "const btn=document.getElementById('confirm-create');"
+                "const r=btn?btn.getBoundingClientRect():null;"
+                "const st=dlg?getComputedStyle(dlg):null;"
+                "return {dlg_open: !!(dlg&&dlg.open),"
+                "btn_rect: r?{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}:null,"
+                "btn_rendered: btn?!!(btn.offsetWidth||btn.offsetHeight||btn.getClientRects().length):false,"
+                "dlg_display: st?st.display:null};})()"
+            )
+            raise RuntimeError(f"dialog never reached [open] within {5.0}s; state={probe!r}")
         s.click_text("确定")
         s.stop_recording()
     return rec

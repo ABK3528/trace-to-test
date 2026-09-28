@@ -343,7 +343,7 @@ class Session:
         """Click the center of the visible element with this exact text."""
         self.js(LOCATE_HELPERS)
         box = self.js(
-            "(()=>{const el=__tttFindByText(" + repr(text) + ");"
+            "(()=>{const el=__tttFindByText(" + json.dumps(text) + ");"
             "if(!el)return null;const r=el.getBoundingClientRect();"
             "return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()"
         )
@@ -405,7 +405,7 @@ class Session:
         count > 1 = 判据不唯一（FAIL_ANCHOR）；count == 0 时，copy_sensitive 锚点
         再做一次归一化近似匹配找 drift 候选（→ FAIL_PRODUCT/anchor_drift）。
         """
-        from ..compile.anchors import candidates, normalize, similarity  # 避免循环导入
+        from ..compile.anchors import DRIFT_THRESHOLD, similarity  # 避免循环导入
 
         if anchor.by == "xy":
             x, y = (int(v) for v in anchor.value.split(","))
@@ -433,7 +433,7 @@ class Session:
                 score = similarity(target, str(label))
                 if score > best_score:
                     best, best_score = str(label), score
-            if best_score >= 0.7:
+            if best_score >= DRIFT_THRESHOLD:
                 return {"count": 0, "snap": None, "drift": best}
         return {"count": 0, "snap": None, "drift": ""}
 
@@ -459,7 +459,7 @@ LOCATE_HELPERS = r"""
                     && norm(clip80(__tttNameOf(el))) === norm(name));
   window.__tttAllLabels = () => [...document.querySelectorAll('button,a,[role],label,input')]
       .filter(window.__tttVisible)
-      .map(el => (el.getAttribute('aria-label') || el.textContent || el.getAttribute('placeholder') || '').trim())
+      .map(el => __tttNameOf(el).trim())
       .filter(Boolean);
   window.__tttHelpersInstalled = true;
 })();

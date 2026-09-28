@@ -191,6 +191,20 @@ def _drift_probe_js(anchor: Anchor) -> str:
     return session_mod.LOCATE_HELPERS + "__tttAllLabels()"
 
 
+def test_all_labels_uses_the_shared_name_chain():
+    """回归：__tttAllLabels 一度手搓第三条取名链（aria-label || textContent ||
+    placeholder），漏掉 title/alt/aria-labelledby —— 于是靠这些取名的锚点没有 drift
+    候选，真实文案漂移被误判成 FAIL_ANCHOR/missing。它必须复用 __tttNameOf
+    （ROLE_NAME_JS 里与 SNAP_JS 共享的那一份），不该再有自己的链。"""
+    helpers = session_mod.LOCATE_HELPERS
+    assert "__tttNameOf" in helpers
+    # 定位 __tttAllLabels 的定义体，断言它调 __tttNameOf 而不是重写链。
+    marker = "__tttAllLabels = () =>"
+    body = helpers.split(marker, 1)[1].split(";")[0]
+    assert "__tttNameOf" in body
+    assert "aria-label" not in body and "placeholder" not in body
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_resolve_locators_are_valid_js(tmp_path):
     anchors = [
@@ -229,11 +243,14 @@ def test_locate_js_covers_both_testid_and_data_test():
     assert "[data-testid=" in probe and "[data-test=" in probe
 
 
-def test_locate_js_returns_the_constructor_each_branch_needs():
+def test_locate_js_returns_an_array_expression_for_each_counting_branch():
     """count 行按 Array.isArray 取 length；text 特意返回单元素（findByText 挑叶子），
-    其余返回数组 —— 定位串必须匹配这个约定。"""
-    assert "querySelectorAll" in locate_js(Anchor(by="testid", value="x"))
-    assert "querySelectorAll" in locate_js(Anchor(by="path", value="body"))
+    其余分支必须返回**数组**（`[...` 展开）。守卫断言的是「展开成数组」这个 shape，
+    不是 `querySelectorAll` 子串 —— 去掉 `[...]` 后 `document.querySelectorAll(...)`
+    仍含该子串却返回 NodeList，`Array.isArray` 为假，count 会少数、snapshot 会坏。
+    断言产物以 `[...` 开头（NodeList 达不到这一点），text 分支返回单元素函数。"""
+    assert locate_js(Anchor(by="testid", value="x")).startswith("[...")
+    assert locate_js(Anchor(by="path", value="body")).startswith("[...")
     assert "__tttFindByText" in locate_js(Anchor(by="text", value="t"))
     assert "__tttFindByRole" in locate_js(Anchor(by="role", role="button", name="n"))
 

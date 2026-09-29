@@ -2,6 +2,8 @@
 
 把一次真实浏览器录制编译成不依赖 LLM 的确定性回归。
 
+设计文档就在本仓：`docs/trace-to-test-design.md`（设计）与 `docs/trace-to-test-mechanism-plan.md`（11 个任务的实施计划）。
+
 ## 验收入口：`make demo`，不是 `make test`
 
 🔴 **`make demo` 是本框架的验收入口** —— 它真录一遍、编译、补全、回放三态，端到端走完整条链。
